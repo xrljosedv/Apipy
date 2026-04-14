@@ -68,8 +68,10 @@ def register_endpoint(ep):
 
         try:
             result = ep['run']({'req': req, 'res': res})
+            if isinstance(result, Response):
+                return result
             if result is not None:
-                if isinstance(result, dict) and 'status' in result:
+                if isinstance(result, dict):
                     code = result.get('code', 200)
                     response_data = {k: v for k, v in result.items() if k != 'code'}
                     return jsonify(response_data), code
