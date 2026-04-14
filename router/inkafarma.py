@@ -3,7 +3,6 @@ from bs4 import BeautifulSoup
 import json
 import time
 import re
-import cloudscraper
 from urllib.parse import quote
 
 def scrape_inkafarma_search(query):
@@ -14,84 +13,72 @@ def scrape_inkafarma_search(query):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'es-PE,es;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'Referer': 'https://www.inkafarma.pe/',
     }
 
     productos = []
-    scraper = cloudscraper.create_scraper()
+    session = requests.Session()
+    session.headers.update(headers)
+
+    def extract_products(data_list):
+        items = []
+        for item in data_list[:20]:
+            nombre = item.get('productName') or item.get('name') or 'Nombre no disponible'
+            precio = 'Precio no disponible'
+            items_list = item.get('items', [])
+            if items_list:
+                sellers = items_list[0].get('sellers', [])
+                if sellers:
+                    offer = sellers[0].get('commertialOffer', {})
+                    price = offer.get('Price')
+                    if price is not None:
+                        precio = f"S/ {price:.2f}" if isinstance(price, (int, float)) else f"S/ {price}"
+            enlace = item.get('link', '')
+            if enlace and not enlace.startswith('http'):
+                enlace = f"https://www.inkafarma.pe{enlace}"
+            imagen = ''
+            if items_list:
+                images = items_list[0].get('images', [])
+                if images:
+                    imagen = images[0].get('imageUrl', '')
+            items.append({
+                "nombre": nombre,
+                "precio": precio,
+                "enlace": enlace,
+                "imagen": imagen
+            })
+        return items
 
     try:
         api_url = f"https://www.inkafarma.pe/api/catalog_system/pub/products/search?ft={quote(query)}"
-        resp = scraper.get(api_url, headers=headers, timeout=15)
+        resp = session.get(api_url, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
             if isinstance(data, list):
-                for item in data[:20]:
-                    nombre = item.get('productName') or item.get('name') or 'Nombre no disponible'
-                    precio = 'Precio no disponible'
-                    items_list = item.get('items', [])
-                    if items_list:
-                        sellers = items_list[0].get('sellers', [])
-                        if sellers:
-                            offer = sellers[0].get('commertialOffer', {})
-                            price = offer.get('Price')
-                            if price is not None:
-                                precio = f"S/ {price:.2f}" if isinstance(price, (int, float)) else f"S/ {price}"
-                    enlace = item.get('link', '')
-                    if enlace and not enlace.startswith('http'):
-                        enlace = f"https://www.inkafarma.pe{enlace}"
-                    imagen = ''
-                    if items_list:
-                        images = items_list[0].get('images', [])
-                        if images:
-                            imagen = images[0].get('imageUrl', '')
-                    productos.append({
-                        "nombre": nombre,
-                        "precio": precio,
-                        "enlace": enlace,
-                        "imagen": imagen
-                    })
+                productos = extract_products(data)
     except:
         pass
 
     if not productos:
         try:
             alt_api = f"https://www.inkafarma.pe/api/catalog_system/pub/products/search/{quote(query)}?sc=1"
-            resp = scraper.get(alt_api, headers=headers, timeout=15)
+            resp = session.get(alt_api, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list):
-                    for item in data[:20]:
-                        nombre = item.get('productName') or item.get('name') or 'Nombre no disponible'
-                        precio = 'Precio no disponible'
-                        items_list = item.get('items', [])
-                        if items_list:
-                            sellers = items_list[0].get('sellers', [])
-                            if sellers:
-                                offer = sellers[0].get('commertialOffer', {})
-                                price = offer.get('Price')
-                                if price is not None:
-                                    precio = f"S/ {price:.2f}" if isinstance(price, (int, float)) else f"S/ {price}"
-                        enlace = item.get('link', '')
-                        if enlace and not enlace.startswith('http'):
-                            enlace = f"https://www.inkafarma.pe{enlace}"
-                        imagen = ''
-                        if items_list:
-                            images = items_list[0].get('images', [])
-                            if images:
-                                imagen = images[0].get('imageUrl', '')
-                        productos.append({
-                            "nombre": nombre,
-                            "precio": precio,
-                            "enlace": enlace,
-                            "imagen": imagen
-                        })
+                    productos = extract_products(data)
         except:
             pass
 
     if not productos:
         try:
             search_url = f"https://www.inkafarma.pe/{quote(query)}?_q={quote(query)}&map=ft"
-            resp = scraper.get(search_url, headers=headers, timeout=15)
+            resp = session.get(search_url, timeout=15)
             soup = BeautifulSoup(resp.text, 'html.parser')
             scripts = soup.find_all('script')
             for script in scripts:
@@ -134,7 +121,7 @@ def scrape_inkafarma_search(query):
     if not productos:
         try:
             search_page = f"https://www.inkafarma.pe/buscar?q={quote(query)}"
-            resp = scraper.get(search_page, headers=headers, timeout=15)
+            resp = session.get(search_page, timeout=15)
             soup = BeautifulSoup(resp.text, 'html.parser')
             product_cards = soup.find_all('a', href=re.compile(r'/(producto|product)/'))
             seen = set()
@@ -209,4 +196,4 @@ endpoints = [
         'middleware': ['apiKey'],
         'run': run
     }
-                                                       ]
+                ]
