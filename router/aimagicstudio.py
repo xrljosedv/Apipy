@@ -2,7 +2,7 @@ import requests
 import uuid
 import base64
 import time
-from flask import request, Response
+from flask import Response
 import json
 
 def generate_magic_image(prompt):
@@ -41,7 +41,6 @@ def generate_magic_image(prompt):
 
 def run(ctx):
     req = ctx['req']
-    res = ctx['res']
     prompt = req.get('query', {}).get('prompt', '')
 
     if not prompt or not isinstance(prompt, str) or not prompt.strip():
@@ -65,27 +64,14 @@ def run(ctx):
         image_bytes = generate_magic_image(prompt)
         filename = f"magicstudio_{int(time.time())}.jpg"
 
-        from flask import current_app
-        if current_app:
-            return Response(
-                image_bytes,
-                mimetype='image/jpeg',
-                headers={
-                    'Content-Disposition': f'inline; filename="{filename}"',
-                    'Cache-Control': 'public, max-age=3600'
-                }
-            )
-        else:
-            return {
-                'status': True,
-                'data': {
-                    'image': base64.b64encode(image_bytes).decode(),
-                    'format': 'jpeg',
-                    'size': len(image_bytes),
-                    'filename': filename
-                },
-                'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        return Response(
+            image_bytes,
+            mimetype='image/jpeg',
+            headers={
+                'Content-Disposition': f'inline; filename="{filename}"',
+                'Cache-Control': 'public, max-age=3600'
             }
+        )
     except Exception as e:
         return {
             'status': False,
@@ -123,4 +109,4 @@ endpoints = [
         'middleware': ['apiKey'],
         'run': run
     }
-]
+    ]
