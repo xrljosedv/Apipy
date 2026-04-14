@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import time
+import re
 
 def scrape_inkafarma_search(query):
     if not query or not isinstance(query, str):
@@ -9,52 +10,93 @@ def scrape_inkafarma_search(query):
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'es-PE,es;q=0.9',
+        'Referer': 'https://inkafarma.pe/',
+        'Origin': 'https://inkafarma.pe',
     }
     
-    url = f"https://inkafarma.pe/search?q={requests.utils.quote(query)}"
+    search_url = f"https://inkafarma.pe/search?q={requests.utils.quote(query)}"
     
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        session = requests.Session()
+        session.get("https://inkafarma.pe/", headers=headers, timeout=10)
+        
+        response = session.get(search_url, headers=headers, timeout=15)
         response.raise_for_status()
+        
         soup = BeautifulSoup(response.text, 'html.parser')
         
         productos = []
         
-        items = soup.select('div[data-product-id]')
-        
-        if not items:
-            items = soup.select('.product-item, .product, .item-product')
-
-        for item in items[:10]:
+        scripts = soup.find_all('script', type='application/ld+json')
+        for script in scripts:
             try:
-                name_tag = item.select_one('.product-item-name, .name, .link, h3')
-                nombre = name_tag.text.strip() if name_tag else "Nombre no disponible"
-                
-                price_tag = item.select_one('.price, .special-price, .regular-price, [class*="price"]')
-                precio = price_tag.text.strip() if price_tag else "Precio no disponible"
-                
-                link_tag = item.select_one('a')
-                enlace = link_tag.get('href') if link_tag else None
-                if enlace and not enlace.startswith('http'):
-                    enlace = f"https://inkafarma.pe{enlace}"
-                
-                img_tag = item.select_one('img')
-                imagen = img_tag.get('src') if img_tag else None
-                if imagen and imagen.startswith('//'):
-                    imagen = f"https:{imagen}"
-
-                productos.append({
-                    "nombre": nombre,
-                    "precio": precio,
-                    "enlace": enlace,
-                    "imagen": imagen
-                })
-                
-            except Exception:
-                continue
-                
+                data = json.loads(script.string)
+                if '@graph' in data:
+                    for item in data['@graph']:
+                        if item.get('@type') == 'Product':
+                            nombre = item.get('name', 'Nombre no disponible')
+                            precio = item.get('offers', {}).get('price', 'Precio no disponible')
+                            enlace = item.get('url', '')
+                            imagen = item.get('image', '')
+                            
+                            productos.append({
+                                "nombre": nombre,
+                                "precio": f"S/ {precio}" if precio != 'Precio no disponible' else precio,
+                                "enlace": enlace,
+                                "imagen": imagen
+                            })
+            except:
+                pass
+        
+        if not productos:
+            product_cards = soup.select('article[data-testid="product-card"], div[class*="product"], div[class*="ProductCard"], li[class*="product"]')
+            
+            for card in product_cards[:10]:
+                try:
+                    name_elem = card.find(['h2', 'h3', 'p', 'span'], class_=re.compile(r'name|title|description', re.I))
+                    nombre = name_elem.text.strip() if name_elem else "Nombre no disponible"
+                    
+                    price_elem = card.find(['span', 'p', 'div'], class_=re.compile(r'price|Price', re.I))
+                    precio = price_elem.text.strip() if price_elem else "Precio no disponible"
+                    
+                    link_elem = card.find('a', href=True)
+                    enlace = link_elem['href'] if link_elem else ''
+                    if enlace and not enlace.startswith('http'):
+                        enlace = f"https://inkafarma.pe{enlace}"
+                    
+                    img_elem = card.find('img')
+                    imagen = img_elem.get('src') or img_elem.get('data-src', '') if img_elem else ''
+                    
+                    productos.append({
+                        "nombre": nombre,
+                        "precio": precio,
+                        "enlace": enlace,
+                        "imagen": imagen
+                    })
+                except:
+                    continue
+        
+        if not productos:
+            api_url = "https://inkafarma.pe/api/catalog_system/pub/products/search"
+            params = {
+                '_q': query,
+                'map': 'ft',
+                'sc': '1'
+            }
+            
+            api_response = session.get(api_url, params=params, headers=headers, timeout=15)
+            if api_response.status_code == 200:
+                api_data = api_response.json()
+                for item in api_data[:10]:
+                    productos.append({
+                        "nombre": item.get('productName', 'Nombre no disponible'),
+                        "precio": f"S/ {item.get('items', [{}])[0].get('sellers', [{}])[0].get('commertialOffer', {}).get('Price', 'Precio no disponible')}",
+                        "enlace": item.get('link', ''),
+                        "imagen": item.get('items', [{}])[0].get('images', [{}])[0].get('imageUrl', '')
+                    })
+        
         return {
             "status": True,
             "query": query,
@@ -110,4 +152,4 @@ endpoints = [
         'middleware': ['apiKey'],
         'run': run
     }
-]
+                            ]
