@@ -31,6 +31,8 @@ def scrape_inkafarma_search(query):
         response = session.get(search_url, headers=headers, timeout=15)
         response.raise_for_status()
         
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
         productos = []
         
         pattern = r'window\.__INITIAL_STATE__\s*=\s*({.*?});'
@@ -92,8 +94,6 @@ def scrape_inkafarma_search(query):
                     pass
         
         if not productos:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
             selectors = [
                 'div.vtex-search-result-3-x-galleryItem',
                 'section.vtex-product-summary-2-x-container',
