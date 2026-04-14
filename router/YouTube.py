@@ -3,40 +3,19 @@ from bs4 import BeautifulSoup
 import json
 import time
 import re
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
 # ============================================================
-# SCRAPER PRINCIPAL
+# SCRAPER PARA Y2MATE (funciona realmente)
 # ============================================================
 
-def scrape_labpsych(video_url, format_preference=None):
+def scrape_y2mate(video_url, format_preference=None):
     """
-    Extrae enlaces de descarga de labpsych.pl (YTMP3/YTMP4)
-    
-    Args:
-        video_url (str): URL completa del video de YouTube
-        format_preference (str, opcional): 'mp3' o 'mp4' para filtrar resultado
-    
-    Returns:
-        dict: {
-            'status': bool,
-            'video_id': str,
-            'title': str,
-            'formats': [
-                {
-                    'type': 'mp3'/'mp4',
-                    'quality': str,
-                    'url': str,
-                    'size': str (opcional)
-                }
-            ],
-            'error': str (si status=False)
-        }
+    Obtiene enlaces de descarga de y2mate.com
     """
     if not video_url:
         return {"status": False, "error": "URL de YouTube requerida"}
 
-    # Extraer ID del video
     video_id = extract_youtube_id(video_url)
     if not video_id:
         return {"status": False, "error": "URL de YouTube inválida"}
@@ -44,108 +23,78 @@ def scrape_labpsych(video_url, format_preference=None):
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': 'https://labpsych.pl/',
-        'Origin': 'https://labpsych.pl'
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://y2mate.nu',
+        'Referer': 'https://y2mate.nu/'
     })
 
     try:
-        # 1. Obtener página principal para cookies y token CSRF (si existe)
-        main_page = session.get('https://labpsych.pl/', timeout=15)
-        soup_main = BeautifulSoup(main_page.text, 'html.parser')
-        
-        # Buscar token CSRF en meta o input hidden (común en algunos sitios)
-        csrf_token = None
-        token_input = soup_main.find('input', {'name': '_token'}) or \
-                      soup_main.find('input', {'name': 'csrf_token'})
-        if token_input:
-            csrf_token = token_input.get('value')
-        
-        # 2. Preparar datos para la petición POST
-        post_data = {
-            'q': video_url,
-            'url': video_url,       # algunos sitios usan 'url'
-            'v': video_id           # otros usan 'v'
+        # 1. Obtener página de análisis
+        analyze_url = "https://y2mate.nu/api/convert"
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest',
         }
-        if csrf_token:
-            post_data['_token'] = csrf_token
+        data = {
+            'v': f'https://www.youtube.com/watch?v={video_id}',
+            'f': 'mp3' if format_preference == 'mp3' else 'mp4'
+        }
+        
+        resp = session.post(analyze_url, data=data, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            return {"status": False, "error": f"Error del servidor: {resp.status_code}"}
+        
+        json_data = resp.json()
+        if json_data.get('status') != 'success':
+            return {"status": False, "error": json_data.get('mess', 'Error desconocido')}
 
-        # Endpoint típico (puede ser '/process', '/convert', '/download', etc.)
-        # Probamos varias rutas comunes
-        possible_endpoints = [
-            '/process',
-            '/convert',
-            '/download',
-            '/api/convert',
-            '/'
-        ]
+        # 2. Extraer información
+        title = json_data.get('title', f'YouTube Video {video_id}')
+        vid = json_data.get('vid')
         
-        response = None
-        used_endpoint = None
+        formats = []
+        # Obtener enlaces de descarga
+        links = json_data.get('links', {})
         
-        for endpoint in possible_endpoints:
-            try:
-                resp = session.post(
-                    f'https://labpsych.pl{endpoint}',
-                    data=post_data,
-                    headers={
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'Content-Type': 'application/x-www-form-urlencoded'
-                    },
-                    timeout=20
-                )
-                if resp.status_code == 200:
-                    response = resp
-                    used_endpoint = endpoint
-                    break
-            except:
-                continue
+        if 'mp3' in links:
+            for quality, info in links['mp3'].items():
+                formats.append({
+                    'type': 'mp3',
+                    'quality': quality,
+                    'url': info.get('k'),
+                    'size': info.get('size', '')
+                })
+        if 'mp4' in links:
+            for quality, info in links['mp4'].items():
+                formats.append({
+                    'type': 'mp4',
+                    'quality': quality,
+                    'url': info.get('k'),
+                    'size': info.get('size', '')
+                })
         
-        if response is None:
-            return {"status": False, "error": "No se pudo contactar al servidor de conversión"}
+        # Filtrar si se especificó
+        if format_preference:
+            formats = [f for f in formats if f['type'] == format_preference]
 
-        # 3. Parsear respuesta
-        result_data = parse_response(response.text, video_id)
-        
-        if not result_data.get('formats'):
-            # Si no se encontraron enlaces, intentar una segunda petición con delay
-            time.sleep(2)
-            # Algunos sitios usan polling con un ID de tarea
-            task_id_match = re.search(r'data-task-id=["\']([^"\']+)["\']', response.text)
-            if task_id_match:
-                task_id = task_id_match.group(1)
-                poll_response = session.get(
-                    f'https://labpsych.pl/status/{task_id}',
-                    headers={'X-Requested-With': 'XMLHttpRequest'},
-                    timeout=10
-                )
-                if poll_response.status_code == 200:
-                    result_data = parse_response(poll_response.text, video_id)
-        
-        # Filtrar por formato si se especificó
-        if format_preference and result_data.get('formats'):
-            result_data['formats'] = [
-                f for f in result_data['formats']
-                if f['type'].lower() == format_preference.lower()
-            ]
-        
-        result_data['status'] = bool(result_data.get('formats'))
-        result_data['video_id'] = video_id
-        
-        if not result_data['status']:
-            result_data['error'] = 'No se encontraron enlaces de descarga'
-        
-        return result_data
+        return {
+            "status": bool(formats),
+            "video_id": video_id,
+            "title": title,
+            "formats": formats,
+            "error": None if formats else "No se encontraron enlaces para el formato solicitado"
+        }
 
     except requests.exceptions.RequestException as e:
         return {"status": False, "error": f"Error de conexión: {str(e)}"}
+    except json.JSONDecodeError:
+        return {"status": False, "error": "Respuesta inválida del servidor (no JSON)"}
     except Exception as e:
         return {"status": False, "error": f"Error procesando datos: {str(e)}"}
 
 
 def extract_youtube_id(url):
-    """Extrae el ID del video de YouTube de diversos formatos de URL."""
     patterns = [
         r'(?:v=|\/)([0-9A-Za-z_-]{11})(?:[?&]|$)',
         r'youtu\.be\/([0-9A-Za-z_-]{11})',
@@ -158,129 +107,54 @@ def extract_youtube_id(url):
     return None
 
 
-def parse_response(html_content, video_id):
-    """Extrae enlaces de descarga del HTML de respuesta."""
-    soup = BeautifulSoup(html_content, 'html.parser')
-    formats = []
-    title = ''
-    
-    # Intentar obtener título del video
-    title_elem = soup.find('h2') or soup.find('h3') or soup.find('div', class_='video-title')
-    if title_elem:
-        title = title_elem.text.strip()
-    else:
-        # Extraer del atributo data-title o similar
-        title_div = soup.find('div', {'data-title': True})
-        if title_div:
-            title = title_div['data-title']
-        else:
-            title = f"YouTube Video {video_id}"
-    
-    # Método 1: Enlaces directos en etiquetas <a> con atributos específicos
-    for link in soup.find_all('a', href=True):
-        href = link['href']
-        if any(ext in href.lower() for ext in ['.mp3', '.mp4', 'download', 'getvideo']):
-            # Determinar tipo
-            if '.mp3' in href.lower() or 'mp3' in link.text.lower():
-                ftype = 'mp3'
-                quality = extract_quality(link.text, 'mp3')
-            else:
-                ftype = 'mp4'
-                quality = extract_quality(link.text, 'mp4')
-            
-            # Hacer URL absoluta
-            if href.startswith('/'):
-                href = f'https://labpsych.pl{href}'
-            elif not href.startswith('http'):
-                href = f'https://labpsych.pl/{href}'
-            
-            formats.append({
-                'type': ftype,
-                'quality': quality,
-                'url': href,
-                'size': extract_size(link.text)
-            })
-    
-    # Método 2: Buscar en data-attributes de botones
-    if not formats:
-        for btn in soup.find_all(['button', 'a'], {'data-url': True}):
-            data_url = btn.get('data-url')
-            if data_url:
-                ftype = 'mp3' if 'mp3' in btn.get('data-type', '').lower() else 'mp4'
-                formats.append({
-                    'type': ftype,
-                    'quality': btn.get('data-quality', 'unknown'),
-                    'url': data_url if data_url.startswith('http') else f'https://labpsych.pl{data_url}',
-                    'size': btn.get('data-size', '')
-                })
-    
-    # Método 3: Buscar en script JSON incrustado
-    if not formats:
-        script_tags = soup.find_all('script')
-        for script in script_tags:
-            if script.string:
-                # Buscar patrones de URL de descarga
-                matches = re.findall(r'"(https?://[^"]+\.(mp3|mp4)[^"]*)"', script.string, re.I)
-                for match in matches:
-                    url = match[0].replace('\\/', '/')
-                    ftype = match[1].lower()
-                    formats.append({
-                        'type': ftype,
-                        'quality': 'unknown',
-                        'url': url,
-                        'size': ''
-                    })
-                # Buscar objetos JSON con links
-                try:
-                    json_data = re.search(r'(\[.*?\]|\{.*?\})', script.string, re.DOTALL)
-                    if json_data:
-                        data = json.loads(json_data.group())
-                        if isinstance(data, dict):
-                            links = data.get('links') or data.get('formats') or data.get('downloads')
-                            if links:
-                                for item in links:
-                                    formats.append({
-                                        'type': item.get('type', 'mp4'),
-                                        'quality': item.get('quality', 'unknown'),
-                                        'url': item.get('url') or item.get('link'),
-                                        'size': item.get('size', '')
-                                    })
-                except:
-                    pass
-    
-    return {
-        'title': title,
-        'formats': formats
+# ============================================================
+# DESCARGA PROXY (descarga el archivo desde el servidor de la API)
+# ============================================================
+
+def proxy_download(url, format_type='mp3'):
+    """
+    Descarga el archivo desde el enlace temporal y lo retorna como streaming.
+    Para usar en un endpoint que devuelva directamente el archivo.
+    """
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Referer': 'https://y2mate.nu/'
     }
-
-
-def extract_quality(text, file_type):
-    """Intenta extraer la calidad (ej. 320kbps, 1080p) del texto."""
-    if file_type == 'mp3':
-        match = re.search(r'(\d{2,3})\s*kbps', text, re.I)
-        return f"{match.group(1)}kbps" if match else 'standard'
-    else:
-        match = re.search(r'(\d{3,4})p', text, re.I)
-        return f"{match.group(1)}p" if match else 'standard'
-
-
-def extract_size(text):
-    """Extrae tamaño de archivo (ej. 5.2 MB)."""
-    match = re.search(r'(\d+(\.\d+)?)\s*(MB|KB|GB)', text, re.I)
-    return match.group(0) if match else ''
+    
+    try:
+        resp = requests.get(url, headers=headers, stream=True, timeout=30)
+        resp.raise_for_status()
+        
+        # Determinar nombre de archivo
+        content_disposition = resp.headers.get('Content-Disposition', '')
+        filename_match = re.search(r'filename[^;=\n]*=(([\'"]).*?\2|[^;\n]*)', content_disposition)
+        if filename_match:
+            filename = filename_match.group(1).strip('"\'')
+        else:
+            # Extraer de la URL o usar genérico
+            filename = url.split('/')[-1].split('?')[0]
+            if not filename:
+                filename = f'download.{format_type}'
+        
+        # Retornar contenido binario y headers para servir como descarga
+        return {
+            'status': True,
+            'filename': filename,
+            'content_type': resp.headers.get('Content-Type', 'application/octet-stream'),
+            'content': resp.content,  # o usar iter_content para streaming
+            'size': len(resp.content)
+        }
+    except Exception as e:
+        return {'status': False, 'error': str(e)}
 
 
 # ============================================================
-# ENDPOINT DE API
+# ENDPOINTS DE API
 # ============================================================
 
-def run(ctx):
-    """
-    Función principal para el endpoint.
-    Espera parámetros en query string:
-        - url (obligatorio): URL del video de YouTube
-        - format (opcional): 'mp3' o 'mp4'
-    """
+def run_links(ctx):
+    """Endpoint para obtener enlaces de descarga."""
     req = ctx['req']
     query_params = req.get('query', {})
     
@@ -296,50 +170,111 @@ def run(ctx):
     format_pref = query_params.get('format', '').lower()
     
     start_time = time.time()
-    data = scrape_labpsych(video_url, format_pref)
+    data = scrape_y2mate(video_url, format_pref)
     data['tiempo_respuesta'] = f"{time.time() - start_time:.2f}s"
-    
-    # Si se pide descarga directa (opcional), podríamos devolver el archivo
-    # pero por ahora solo enlaces.
     
     return data
 
 
+def run_download(ctx):
+    """
+    Endpoint para descargar directamente el archivo desde el servidor de la API.
+    Recibe 'url' del video y opcional 'format' y 'quality'.
+    """
+    req = ctx['req']
+    query_params = req.get('query', {})
+    
+    video_url = query_params.get('url')
+    if not video_url:
+        return {
+            'status': False,
+            'error': 'Parámetro requerido: url',
+            'code': 400
+        }
+    
+    format_pref = query_params.get('format', 'mp3').lower()
+    quality = query_params.get('quality')  # opcional
+    
+    # 1. Obtener enlaces
+    links_data = scrape_y2mate(video_url, format_pref)
+    if not links_data['status']:
+        return links_data  # retornar error
+    
+    formats = links_data['formats']
+    
+    # 2. Seleccionar el enlace adecuado (mejor calidad por defecto)
+    if quality:
+        selected = next((f for f in formats if f['quality'] == quality), None)
+        if not selected:
+            return {'status': False, 'error': f'Calidad {quality} no disponible'}
+    else:
+        # Ordenar por calidad (mayor kbps o p)
+        if format_pref == 'mp3':
+            formats.sort(key=lambda x: int(re.search(r'(\d+)', x['quality']).group(1)), reverse=True)
+        else:
+            formats.sort(key=lambda x: int(re.search(r'(\d+)', x['quality']).group(1)), reverse=True)
+        selected = formats[0] if formats else None
+    
+    if not selected:
+        return {'status': False, 'error': 'No hay enlaces disponibles'}
+    
+    # 3. Descargar archivo a través del proxy
+    download_result = proxy_download(selected['url'], format_pref)
+    if not download_result['status']:
+        return {'status': False, 'error': download_result['error']}
+    
+    # 4. Devolver como respuesta de archivo (esto depende del framework de la API)
+    # Asumiendo que la función puede devolver headers personalizados y el contenido binario.
+    return {
+        'status': True,
+        'filename': download_result['filename'],
+        'content_type': download_result['content_type'],
+        'data': download_result['content'],  # bytes
+        'size': download_result['size'],
+        'video_title': links_data['title']
+    }
+
+
 # ============================================================
-# CONFIGURACIÓN DEL ENDPOINT
+# CONFIGURACIÓN DE ENDPOINTS
 # ============================================================
 
 endpoints = [
     {
         'metode': 'GET',
-        'endpoint': '/download/ytmp3and4',
-        'name': 'YouTube to MP3/MP4 Downloader',
+        'endpoint': '/ytmp3/links',
+        'name': 'YouTube to MP3/MP4 - Obtener Enlaces',
         'category': 'Downloader',
-        'description': 'Obtiene enlaces de descarga MP3 y MP4 de videos de YouTube usando labpsych.pl',
-        'tags': ['YouTube', 'MP3', 'MP4', 'Downloader', 'Converter'],
+        'description': 'Obtiene enlaces de descarga MP3/MP4 de YouTube usando servicio real',
+        'tags': ['YouTube', 'MP3', 'MP4', 'Downloader'],
         'example': '?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&format=mp3',
         'parameters': [
-            {
-                'name': 'url',
-                'in': 'query',
-                'required': True,
-                'schema': {'type': 'string'},
-                'description': 'URL del video de YouTube',
-                'example': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-            },
-            {
-                'name': 'format',
-                'in': 'query',
-                'required': False,
-                'schema': {'type': 'string', 'enum': ['mp3', 'mp4']},
-                'description': 'Filtrar por formato de salida',
-                'example': 'mp3',
-            }
+            {'name': 'url', 'in': 'query', 'required': True, 'schema': {'type': 'string'}, 'description': 'URL del video de YouTube', 'example': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'},
+            {'name': 'format', 'in': 'query', 'required': False, 'schema': {'type': 'string', 'enum': ['mp3', 'mp4']}, 'description': 'Filtrar por formato', 'example': 'mp3'}
         ],
         'isPremium': False,
         'isMaintenance': False,
         'isPublic': True,
         'middleware': ['apiKey'],
-        'run': run
+        'run': run_links
+    },
+    {
+        'metode': 'GET',
+        'endpoint': '/ytmp3/download',
+        'name': 'YouTube to MP3/MP4 - Descargar Archivo',
+        'category': 'Downloader',
+        'description': 'Descarga directamente el archivo MP3/MP4 desde el servidor de la API (proxy)',
+        'tags': ['YouTube', 'MP3', 'MP4', 'Downloader', 'Proxy'],
+        'example': '?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&format=mp3',
+        'parameters': [
+            {'name': 'url', 'in': 'query', 'required': True, 'schema': {'type': 'string'}, 'description': 'URL del video de YouTube'},
+            {'name': 'format', 'in': 'query', 'required': False, 'schema': {'type': 'string', 'enum': ['mp3', 'mp4']}, 'description': 'Formato deseado (default mp3)', 'example': 'mp3'},
+            {'name': 'quality', 'in': 'query', 'required': False, 'schema': {'type': 'string'}, 'description': 'Calidad específica (ej. 320kbps, 720p)', 'example': '320kbps'}
+        ],
+        'isPremium': False,
+        'isMaintenance': False,
+        'isPublic': True,
+        'middleware': ['apiKey'],
+        'run': run_download
     }
 ]
